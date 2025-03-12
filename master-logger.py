@@ -12,7 +12,20 @@ class Logger:
     context-execution: cron|webserver|etc
     context-value: account_id|jira_ticket_key|user_id|etc
 
+
+    If you are in a request context, set to the flask request a request_id variable to search logs by a specific request
+    Add this piece of code to set the request id to uniquely identify requests
     
+        from flask import Flask, request
+        import uuid
+
+        app = Flask(__name__)
+
+        @app.before_request
+        def assign_request_id():
+            request.request_id = str(uuid.uuid4()) 
+
+
     Be careful, we use it globally, so we can trace by context key without explicitly passing the key to the 
     lower level services that shouldn't be aware of the context. As all execution is sequential, there
     is no race condition that would invalidate the current context key. The processing function that
