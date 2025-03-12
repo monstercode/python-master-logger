@@ -9,7 +9,7 @@ class Logger:
     The idea is logging in a consistent formart like 
         [<datetime>][<context-execution>][<Class>][<method>][<context-value>] <Message>
     
-    context-execution: cron|webserver|etc
+    context-execution: cron|request_id|etc
     context-value: account_id|jira_ticket_key|user_id|etc
 
 
