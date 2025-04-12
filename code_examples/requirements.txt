@@ -3,4 +3,3 @@ requests
 fastapi
 httpx
 uvicorn
-ipdb

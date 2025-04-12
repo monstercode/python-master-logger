@@ -106,7 +106,12 @@ def exception(self, message):
 
 Check in the `code_examples` folder some usage examples. run them like:
 ```
+# requirements are only needed to install flask and fastapi to run the code examples
+# it is not required to use the Logger in your code, no dependencies! Yey!
+pip3 install -r code_examples/requirements.txt
 python3 -m code_examples.asyncio_example 
 python3 -m code_examples.class_example
 python3 -m code_examples.singleton_example
+python3 -m code_examples.flask_request_id
+python3 -m code_examples.fastapi_request_id
 ```
