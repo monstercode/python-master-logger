@@ -59,7 +59,7 @@ logger.set_context_key(f"account_id: {account_id}")
 # This doesn't affect other coroutines or threads. 
 ```
 
-### Flask request id snipper
+### Flask request id snippet
 To set a unique request id per request, add this snippet to your code:
 
 ```
@@ -71,6 +71,18 @@ To set a unique request id per request, add this snippet to your code:
         @app.before_request
         def assign_request_id():
             request.request_id = str(uuid.uuid4()) 
+```
+
+### FastAPI request id snippet
+
+```
+@app.middleware("http")
+async def add_request_id(request: Request, call_next):
+    """Middleware to add request_id to execution_context."""
+    request_id = str(uuid.uuid4())  # Generate a unique request ID
+    logger.set_execution_context(request_id)  # Set the request_id in the logger's context
+    response = await call_next(request)
+    return response
 ```
 
 The Logger class mimics the standard methods from the logging module
