@@ -26,6 +26,19 @@ class Logger:
         @app.before_request
         def assign_request_id():
             request.request_id = str(uuid.uuid4())
+
+    =============================================================
+
+    For FastAPI add the middleware to set the request_id in the execution context.
+
+    @app.middleware("http")
+    async def add_request_id(request: Request, call_next):
+        # Middleware to add request_id to execution_context
+        request_id = str(uuid.uuid4())  # Generate a unique request ID
+        logger.set_execution_context(request_id)  # Set the request_id in the logger's context
+        response = await call_next(request)
+        return response
+
     """
 
     SINGLETON_INSTANCE = None # the Logger instance singleton
@@ -102,7 +115,8 @@ class Logger:
         return ""
 
     def _get_execution_context(self) -> str:
-        """Get the execution context, fallback to try getting the reuqest id from Flask request"""
+        """Get the execution context, fallback to try getting the request id from Flask request"""
+
         execution_context = self.execution_context.get()
         if execution_context:
             return execution_context
@@ -114,6 +128,7 @@ class Logger:
                 return getattr(request, "request_id", "")
         except (ModuleNotFoundError, ImportError, RuntimeError, AttributeError):
             pass
+
 
         return ""
 

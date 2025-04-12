@@ -1,0 +1,6 @@
+flask
+requests
+fastapi
+httpx
+uvicorn
+ipdb
