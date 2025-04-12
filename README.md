@@ -63,14 +63,14 @@ logger.set_context_key(f"account_id: {account_id}")
 To set a unique request id per request, add this snippet to your code:
 
 ```
-    from flask import Flask, request
-        import uuid
+from flask import Flask, request
+import uuid
 
-        app = Flask(__name__)
+app = Flask(__name__)
 
-        @app.before_request
-        def assign_request_id():
-            request.request_id = str(uuid.uuid4()) 
+@app.before_request
+def assign_request_id():
+    request.request_id = str(uuid.uuid4()) 
 ```
 
 ### FastAPI request id snippet
