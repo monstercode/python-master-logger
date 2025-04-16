@@ -76,6 +76,23 @@ class Logger:
         """Set the execution context, whether is from a cronjob, webserver (specify a request id), etv)"""
         self.execution_context.set(execution_context)
 
+    def get_execution_context(self) -> str:
+        """Get the execution context, fallback to try getting the request id from Flask request"""
+
+        execution_context = self.execution_context.get()
+        if execution_context:
+            return execution_context
+
+        # is no execution context if set, try to check if we are in a request context and have a request_id
+        try:
+            from flask import has_request_context, request
+            if has_request_context():
+                return getattr(request, "request_id", "")
+        except (ModuleNotFoundError, ImportError, RuntimeError, AttributeError):
+            pass
+
+        return ""
+
     def _get_caller_from_stack(self):
         """Inspect the call stack to know where is this log being executed from automatically,
         retrieve class, method or function and line number"""
@@ -114,29 +131,11 @@ class Logger:
         # Static methods do not have any implicit reference to the class they're defined in.
         return ""
 
-    def _get_execution_context(self) -> str:
-        """Get the execution context, fallback to try getting the request id from Flask request"""
-
-        execution_context = self.execution_context.get()
-        if execution_context:
-            return execution_context
-
-        # is no execution context if set, try to check if we are in a request context and have a request_id
-        try:
-            from flask import has_request_context, request
-            if has_request_context():
-                return getattr(request, "request_id", "")
-        except (ModuleNotFoundError, ImportError, RuntimeError, AttributeError):
-            pass
-
-
-        return ""
-
     def _get_context_string(self) -> str:
         """Prepare the prefix with class+method or function, and context key, if any"""
         prefix = ""
 
-        execution_context = self._get_execution_context()
+        execution_context = self.get_execution_context()
 
         try:
             class_name, method_or_function_name, line_number= self._get_caller_from_stack()
