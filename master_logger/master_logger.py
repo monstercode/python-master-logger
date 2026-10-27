@@ -1,177 +1,238 @@
+
 import logging
-import inspect
+import sys
 import contextvars
+import threading
+
+from contextlib import contextmanager
+
+
+class _ContextFilter(logging.Filter):
+    """Inject execution context into every LogRecord."""
+
+    def __init__(self, process_context, context_key, log_line_number=True):
+        super().__init__()
+        self.process_context = process_context
+        self.context_key = context_key
+        self.log_line_number = log_line_number
+
+    def filter(self, record):
+        parts = []
+
+        execution_context = self.process_context.get()
+        context_key = self.context_key.get()
+
+        class_name = getattr(record, "_app_class_name", "")
+
+        if execution_context:
+            parts.append(execution_context)
+
+        if class_name:
+            parts.append(class_name)
+
+        method = record.funcName
+
+        if method:
+            if self.log_line_number:
+                parts.append(f"{method}:{record.lineno}")
+            else:
+                parts.append(method)
+
+        if context_key:
+            parts.append(context_key)
+
+        record.context_prefix = "".join(
+            f"[{part}]" for part in parts
+        )
+
+        return True
 
 
 class Logger:
-    """This is an app level Logger class singleton shared among all services.
-    It's thread-safe using contextvars for global context execution
-    and not pass around arguments only used by the logger but useful for logging context info.
+    """Application-level singleton logger.
 
-    The idea is logging in a consistent format like
-        [<datetime>][<context-execution>][<Class>][<method>][<context-value>] <Message>
-    
-    context-execution: <cronjob-name> | <request_id> | nothing
-    context-value: an account_id| a jira_ticket_key | a user_id | nothing
+    Supports:
+        - Thread-safe singleton initialization.
+        - Context-local execution metadata using ContextVar.
+        - Automatic caller identification.
+        - Nested context managers.
+        - Standard Python logging formatting and exception handling.
 
-
-    If you are using flask, set to the flask request a request_id attribute to search logs by a specific request
-    Add this piece of code to set the request id to uniquely identify requests
-    
-        from flask import Flask, request
-        import uuid
-
-        app = Flask(__name__)
-
-        @app.before_request
-        def assign_request_id():
-            request.request_id = str(uuid.uuid4())
-
-    =============================================================
-
-    For FastAPI add the middleware to set the request_id in the execution context.
-
-    @app.middleware("http")
-    async def add_request_id(request: Request, call_next):
-        # Middleware to add request_id to execution_context
-        request_id = str(uuid.uuid4())  # Generate a unique request ID
-        logger.set_execution_context(request_id)  # Set the request_id in the logger's context
-        response = await call_next(request)
-        return response
-
+    Log format:
+        [datetime][level][execution][class][method:line][context_key] message
     """
 
-    SINGLETON_INSTANCE = None # the Logger instance singleton
-    INITIALIZED = False # if the Logger is initialized, __init__ is called every time after __new__.
-        # This flag prevent to call __init__ on a second instantiation of the singleton
+    _instance = None
+    _instance_lock = threading.Lock()
+    _init_lock = threading.Lock()
 
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            with cls._instance_lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
 
-    def __init__(self, log_line_number=True, logger_level=logging.DEBUG):
-        if self.INITIALIZED:
-            # Do not overwrite the instance attributes of the singleton if already initialized.
-            # This would empty the already set attributes
-            return
+        return cls._instance
 
-        self.execution_context = contextvars.ContextVar("logger_exec_context", default="")
-        self.context_key = contextvars.ContextVar("logger_context_key", default="")
-        self.log_line_number = log_line_number
+    def __init__(
+        self,
+        log_line_number=True,
+        logger_level=logging.DEBUG
+    ):
+        # Protect initialization from concurrent calls.
+        with self._init_lock:
 
-        logging.basicConfig(format="[%(asctime)s][%(levelname)s]%(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+            if getattr(self, "_initialized", False):
+                return
 
-        self.logger = logging.getLogger("master-logger")
-        self.logger.setLevel(logger_level)
-        Logger.INITIALIZED = True
+            self.process_context = contextvars.ContextVar(
+                "logger_exec_context",
+                default=""
+            )
 
-    def __new__(cls, log_line_number=True, logger_level=logging.DEBUG):
-        """This method makes the service a Singleton"""
-        if not cls.SINGLETON_INSTANCE:
-            cls.SINGLETON_INSTANCE = super(Logger, cls).__new__(cls, )
-        return cls.SINGLETON_INSTANCE
+            self.context_key = contextvars.ContextVar(
+                "logger_context_key",
+                default=""
+            )
+
+            self.log_line_number = log_line_number
+
+            self.logger = logging.getLogger("master-logger")
+            self.logger.setLevel(logger_level)
+
+            # Avoid adding duplicate filters.
+            self.logger.addFilter(
+                _ContextFilter(
+                    self.process_context,
+                    self.context_key,
+                    log_line_number
+                )
+            )
+
+            # Do not configure the global root logger here.
+            # Logging handlers and formatters belong to the application.
+
+            self._initialized = True
+
+    # ---------------------------------------------------------
+    # Context management
+    # ---------------------------------------------------------
 
     def set_context_key(self, context_key: str):
-        """Set the context key of the execution (account id, user id, jira key, etc)"""
-        self.context_key.set(context_key)
+        """Set the current context key."""
 
-    def set_execution_context(self, execution_context: str):
-        """Set the execution context, whether is from a cronjob, webserver (specify a request id), etv)"""
-        self.execution_context.set(execution_context)
+        return self.context_key.set(context_key)
 
-    def get_execution_context(self) -> str:
-        """Get the execution context, fallback to try getting the request id from Flask request"""
+    def set_process_context(self, execution_context: str):
+        """Set the current execution context."""
 
-        execution_context = self.execution_context.get()
-        if execution_context:
-            return execution_context
+        return self.process_context.set(execution_context)
 
-        # is no execution context if set, try to check if we are in a request context and have a request_id
-        try:
-            from flask import has_request_context, request
-            if has_request_context():
-                return getattr(request, "request_id", "")
-        except (ModuleNotFoundError, ImportError, RuntimeError, AttributeError):
-            pass
+    def get_process_context(self) -> str:
+        return self.process_context.get()
 
-        return ""
+    def get_context_key(self) -> str:
+        return self.context_key.get()
 
-    def _get_caller_from_stack(self):
-        """Inspect the call stack to know where is this log being executed from automatically,
-        retrieve class, method or function and line number"""
-        stack = inspect.stack()
-        method_or_function_name = ""
-        class_name = ""
-        line_number = ""
+    @contextmanager
+    def context(self, execution=None, key=None):
+        """Temporarily set execution context and context key.
 
-        for i in range(len(stack)-1):
-            # Iterate through the stack calls. If the current frame is for Logger, skip
-            if type(stack[i][0].f_locals.get("self")) is Logger:
-                continue
+        Previous values are restored automatically, supporting
+        nested contexts and exceptions.
+        """
 
-            # We got our first frame that is not from the Logger execution
-            class_name = self._get_class_name(stack_frame=stack[i][0])
-            method_or_function_name = stack[i][0].f_code.co_name
-            line_number = stack[i][0].f_lineno
-            break
-
-        return class_name, method_or_function_name, line_number
-
-    def _get_class_name(self, stack_frame) -> str:
-        """We get the class name by the parameters of the function being called. If it's
-        a static method or not bound to a class, we get nothing. Also, we rely on
-        'self' and 'cls' parameter naming convention"""
-
-        # Instance class name
-        if 'self' in stack_frame.f_locals:
-            return stack_frame.f_locals['self'].__class__.__name__
-
-        # Class method class name
-        elif 'cls' in stack_frame.f_locals:
-            return stack_frame.f_locals['cls'].__name__
-
-        # Not in a class/instance or calling a static method
-        # Static methods do not have any implicit reference to the class they're defined in.
-        return ""
-
-    def _get_context_string(self) -> str:
-        """Prepare the prefix with class+method or function, and context key, if any"""
-        prefix = ""
-
-        execution_context = self.get_execution_context()
+        execution_token = None
+        key_token = None
 
         try:
-            class_name, method_or_function_name, line_number= self._get_caller_from_stack()
-        except Exception:
-            class_name, method_or_function_name, line_number = "", "", ""
+            if execution is not None:
+                execution_token = self.process_context.set(execution)
 
-        if execution_context:
-            prefix += f"[{execution_context}]"
-        if class_name:
-            prefix += f"[{class_name}]"
-        if method_or_function_name:
-            prefix += f"[{method_or_function_name}"
-            if self.log_line_number:
-                prefix += f":{line_number}"
-            prefix += f"]"
-        if self.context_key.get():
-            prefix += f"[{self.context_key.get()}]"
+            if key is not None:
+                key_token = self.context_key.set(key)
 
-        return prefix
+            yield self
 
-    def debug(self, message):
-        self.logger.debug(f"{self._get_context_string()}{'' if message.startswith('[') else ' '}{message}")
+        finally:
+            if key_token is not None:
+                self.context_key.reset(key_token)
 
-    def info(self, message):
-        self.logger.info(f"{self._get_context_string()}{'' if message.startswith('[') else ' '}{message}")
+            if execution_token is not None:
+                self.process_context.reset(execution_token)
 
-    def warning(self, message):
-        self.logger.warning(f"{self._get_context_string()}{'' if message.startswith('[') else ' '}{message}")
+    # ---------------------------------------------------------
+    # Caller identification
+    # ---------------------------------------------------------
 
-    def error(self, message):
-        self.logger.error(f"{self._get_context_string()}{'' if message.startswith('[') else ' '}{message}")
+    def _get_caller_class(self) -> str:
+        """Identify the class calling the logger.
 
-    def critical(self, message):
-        self.logger.critical(f"{self._get_context_string()}{'' if message.startswith('[') else ' '}{message}")
+        Uses the calling frame instead of inspecting the entire stack.
+        """
 
-    def exception(self, message):
-        """This method should be used inside an exception handler.
-        Yes, it is aware of the higher level exception, no need to pass it explicitly"""
-        self.logger.exception(f"{self._get_context_string()}{'' if message.startswith('[') else ' '}{message}")
+        try:
+            caller_frame = sys._getframe(2)
+
+            if "self" in caller_frame.f_locals:
+                return caller_frame.f_locals["self"].__class__.__name__
+
+            if "cls" in caller_frame.f_locals:
+                return caller_frame.f_locals["cls"].__name__
+
+            return ""
+
+        except (ValueError, AttributeError):
+            return ""
+
+    # ---------------------------------------------------------
+    # Internal logging
+    # ---------------------------------------------------------
+
+    def _log(self, level, message, *args, **kwargs):
+
+        # Avoid unnecessary work when the log level is disabled.
+        if not self.logger.isEnabledFor(level):
+            return
+
+        class_name = self._get_caller_class()
+
+        # Prevent callers from accidentally overriding our stacklevel.
+        kwargs.pop("stacklevel", None)
+
+        self.logger.log(
+            level,
+            message,
+            *args,
+            extra={
+                "_app_class_name": class_name
+            },
+            stacklevel=3,
+            **kwargs
+        )
+
+    # ---------------------------------------------------------
+    # Public logging methods
+    # ---------------------------------------------------------
+
+    def debug(self, message, *args, **kwargs):
+        self._log(logging.DEBUG, message, *args, **kwargs)
+
+    def info(self, message, *args, **kwargs):
+        self._log(logging.INFO, message, *args, **kwargs)
+
+    def warning(self, message, *args, **kwargs):
+        self._log(logging.WARNING, message, *args, **kwargs)
+
+    def error(self, message, *args, **kwargs):
+        self._log(logging.ERROR, message, *args, **kwargs)
+
+    def critical(self, message, *args, **kwargs):
+        self._log(logging.CRITICAL, message, *args, **kwargs)
+
+    def exception(self, message, *args, **kwargs):
+        """Log an exception with its traceback."""
+
+        kwargs.setdefault("exc_info", True)
+
+        self._log(logging.ERROR, message, *args, **kwargs)
